@@ -1,143 +1,111 @@
-/** Tela principal: quanto posso gastar, termômetro, cascata, alertas e próximos eventos. */
+/**
+ * Tela inicial, pensada para leitura em poucos segundos:
+ * 1) quanto pode gastar (o número principal, com cor de situação);
+ * 2) botão grande para registrar um gasto;
+ * 3) três números de apoio (na conta, vai receber, contas a pagar);
+ * 4) próximas contas com botão de uma ação.
+ * Detalhes, gráficos e explicações ficam nas outras telas.
+ */
 
 import { esc } from '../dom.js';
 import { fmt } from '../../core/money.js';
-import { fmtCurta, fmtData, nomeMes, diffDays } from '../../core/dates.js';
-import { kpi, valor, termometro, graficoSaldo, barra, listaCategorias, ESTADOS, pilula } from '../components.js';
-import { gastosPorCategoria } from '../../domain/cashflow.js';
+import { fmtCurta, diffDays } from '../../core/dates.js';
 
-const ICONE_ALERTA = { critico: '●', atencao: '●', info: '●' };
+const SITUACAO = {
+  verde: { titulo: 'Tudo em dia', frase: 'Pode usar sem atrasar nenhuma conta.' },
+  amarelo: { titulo: 'Atenção', frase: 'Sobra pouco. Gaste com cuidado.' },
+  vermelho: { titulo: 'Cuidado', frase: '' },
+};
 
 export function render(ctx) {
-  const { a, db, alertas } = ctx;
-  const t = a.termometro;
-  const vazio = !db.receitas.length && !db.lancamentos.length && !db.recorrentes.length && !db.cartoes.length;
+  const { a, db } = ctx;
+  const semDados = !db.receitas.length && !db.lancamentos.length && !db.recorrentes.length && !db.cartoes.length;
+  if (semDados) return comecar(db);
 
-  const ptMin = a.eventos.find((e) => e.dataEfetiva === a.dataMinimo && e.saldoApos === a.minimo);
-  const limitador = a.dataMinimo === a.hoje
-    ? 'Seu saldo de hoje é o ponto mais baixo da projeção.'
-    : `O limite vem de ${fmtData(a.dataMinimo)}${ptMin ? ` (${esc(ptMin.descricao)})` : ''}, quando o saldo projetado chega a ${fmt(a.minimo)}.`;
+  const estado = a.termometro.estado;
+  const s = SITUACAO[estado];
+  const livre = Math.max(0, a.livre);
+  const frase = a.livre < 0 ? `Faltam ${fmt(-a.livre)} para pagar todas as contas.` : s.frase;
 
-  const cat = gastosPorCategoria(db, a, a.mesAtual);
-  const totalMes = cat.reduce((s, c) => s + c.valor, 0);
+  // Contas até o próximo recebimento (ou próximos 30 dias, se não houver receita cadastrada)
+  const limite = a.proxReceita?.dataEfetiva;
+  const aPagar = a.eventos.filter((e) => e.valor < 0 && e.tipo !== 'variavelPrevisto'
+    && (limite ? e.dataEfetiva < limite : diffDays(a.hoje, e.dataEfetiva) <= 30));
+  const totalAPagar = aPagar.reduce((t, e) => t - e.valor, 0);
+
+  const proximos = a.eventos
+    .filter((e) => ['fixo', 'fatura', 'receita'].includes(e.tipo) && diffDays(a.hoje, e.dataEfetiva) <= 30)
+    .slice(0, 5);
 
   return `
-  ${vazio ? boasVindas() : ''}
-  <section class="hero hero--${t.estado}">
-    <div class="hero__principal">
-      <span class="hero__rotulo">Livre para gastar hoje</span>
-      <span class="hero__valor num ${a.livre < 0 ? 'neg' : ''}">${esc(fmt(a.livre))}</span>
-      <p class="hero__explica">${limitador}${a.reserva > 0 ? ` Já descontada a reserva de ${fmt(a.reserva)}.` : ''}</p>
-      ${a.livre >= 0 && a.proxReceita && a.livreAteReceita > a.livre ? `<p class="hero__explica">Até o próximo recebimento (${fmtCurta(a.proxReceita.dataEfetiva)}) o saldo fica acima de ${fmt(a.livreAteReceita + a.reserva)}, mas gastar mais que ${fmt(a.livre)} agora deixa um compromisso futuro descoberto.</p>` : ''}
+  <section class="inicio-destaque inicio-destaque--${estado}">
+    <span class="inicio-situacao"><i></i>${s.titulo}</span>
+    <p class="inicio-rotulo">Você pode gastar</p>
+    <p class="inicio-valor num">${esc(fmt(livre))}</p>
+    <p class="inicio-frase">${esc(frase)}</p>
+  </section>
+
+  <button class="inicio-botao" data-acao="novo-gasto">+ Registrar gasto</button>
+
+  <section class="inicio-numeros">
+    <a class="inicio-numero" href="#/ajustes">
+      <span>Na conta</span>
+      <strong class="num ${a.saldoAtual < 0 ? 'neg' : ''}">${esc(fmt(a.saldoAtual))}</strong>
+    </a>
+    <a class="inicio-numero" href="#/fixos">
+      <span>Vai receber${a.proxReceita ? ` dia ${fmtCurta(a.proxReceita.dataEfetiva)}` : ''}</span>
+      <strong class="num">${esc(fmt(a.proxReceita?.valor || 0))}</strong>
+    </a>
+    <a class="inicio-numero" href="#/mes">
+      <span>A pagar${limite ? ` até ${fmtCurta(limite)}` : ' em 30 dias'}</span>
+      <strong class="num">${esc(fmt(totalAPagar))}</strong>
+    </a>
+  </section>
+
+  <section class="inicio-lista">
+    <h2>Próximas contas</h2>
+    ${proximos.length ? `<ul>${proximos.map((e) => item(e, a.hoje)).join('')}</ul>` : '<p class="inicio-vazio">Nenhuma conta nos próximos 30 dias.</p>'}
+  </section>
+
+  <a class="inicio-detalhes" href="#/mes">Ver mais detalhes</a>`;
+}
+
+function quando(e, hoje) {
+  if (e.atrasado) return 'Atrasada';
+  const d = diffDays(hoje, e.data);
+  if (d === 0) return 'Hoje';
+  if (d === 1) return 'Amanhã';
+  return `Dia ${fmtCurta(e.data)}`;
+}
+
+function item(e, hoje) {
+  const entrada = e.valor > 0;
+  const botao = e.tipo === 'receita'
+    ? `<button class="inicio-acao" data-acao="confirmar-receita" data-id="${esc(e.id)}">Recebi</button>`
+    : e.tipo === 'fixo'
+      ? `<button class="inicio-acao" data-acao="pagar-fixo" data-id="${esc(e.id)}">Paguei</button>`
+      : `<button class="inicio-acao" data-acao="pagar-fatura" data-cartao="${esc(e.cartaoId)}" data-chave="${esc(e.chave)}">Paguei</button>`;
+  return `<li class="${e.atrasado ? 'atrasada' : ''}">
+    <div class="inicio-item">
+      <strong>${esc(e.descricao)}</strong>
+      <span>${quando(e, hoje)}</span>
     </div>
-    <div class="hero__termo">
-      ${termometro(t)}
-      <div class="hero__estado">
-        <strong class="estado estado--${t.estado}">${ESTADOS[t.estado].nome}</strong>
-        <ul>${t.motivos.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>
-        <button class="link" data-acao="explicar-termometro">Como é calculado</button>
-      </div>
-    </div>
+    <span class="num ${entrada ? 'pos' : ''}">${entrada ? '+ ' : ''}${esc(fmt(Math.abs(e.valor)))}</span>
+    ${botao}
+  </li>`;
+}
+
+function comecar(db) {
+  const conta = db.contas[0];
+  return `
+  <section class="inicio-destaque">
+    <p class="inicio-rotulo">Bem-vinda!</p>
+    <p class="inicio-frase">Para o app mostrar quanto você pode gastar, preencha estas informações:</p>
   </section>
-
-  <section class="kpis">
-    ${kpi({ rotulo: 'Saldo em conta', valor: a.saldoAtual, sub: a.contas.length > 1 ? `${a.contas.length} contas` : 'dinheiro disponível agora', acao: 'data-acao="ir" data-href="#/ajustes"' })}
-    ${kpi({ rotulo: 'A receber', valor: a.cascata.aReceber, sub: `até ${fmtCurta(a.cascata.fimJanela)}${a.proxReceita ? ` · próximo ${fmtCurta(a.proxReceita.dataEfetiva)}` : ''}`, tom: 'pos' })}
-    ${kpi({ rotulo: 'Comprometido', valor: a.totais.comprometido, sub: `contas, faturas e parcelas até ${nomeMes(a.meses.at(-1).chave, { curto: true })}`, acao: 'data-acao="ir" data-href="#/mes"' })}
-    ${kpi({ rotulo: 'No cartão', valor: a.totais.cartaoComprometido, sub: cartoesResumo(a), acao: 'data-acao="ir" data-href="#/cartoes"' })}
-    ${kpi({ rotulo: 'Parcelas futuras', valor: a.totais.parcelasFuturas, sub: `${a.parcelamentos.filter((p) => !p.concluido).length} compras parceladas`, acao: 'data-acao="ir" data-href="#/gastos"' })}
-  </section>
-
-  <div class="colunas">
-    <section class="cartao-ui">
-      <header class="cartao-ui__topo"><h2>Do saldo de hoje até ${fmtData(a.cascata.fimJanela)}</h2></header>
-      ${cascata(a)}
-    </section>
-    <section class="cartao-ui">
-      <header class="cartao-ui__topo"><h2>Alertas</h2></header>
-      ${alertas.length ? `<ul class="alertas">${alertas.map((al) => `<li class="alerta alerta--${al.nivel}">
-          <span class="alerta__icone" aria-hidden="true">${ICONE_ALERTA[al.nivel]}</span>
-          <span>${esc(al.texto)}</span>
-          ${al.rota ? `<a class="link" href="${al.rota}">ver</a>` : ''}
-        </li>`).join('')}</ul>` : '<p class="texto-sec">Nenhum alerta no momento.</p>'}
-    </section>
-  </div>
-
-  <section class="cartao-ui">
-    <header class="cartao-ui__topo"><h2>Saldo projetado</h2><span class="texto-sec">até ${fmtData(a.fim)}${a.estimativa.valor ? ` · inclui ${fmt(a.estimativa.valor)}/mês de gasto variável previsto` : ''}</span></header>
-    ${graficoSaldo(a)}
-  </section>
-
-  <div class="colunas">
-    <section class="cartao-ui">
-      <header class="cartao-ui__topo"><h2>Próximos 30 dias</h2><a class="link" href="#/mes">visão mensal</a></header>
-      ${proximos(a)}
-    </section>
-    <section class="cartao-ui">
-      <header class="cartao-ui__topo"><h2>Gastos de ${nomeMes(a.mesAtual, { ano: false })}</h2><span class="num">${fmt(totalMes)}</span></header>
-      ${a.estimativa.valor > 0 ? `<div class="meta"><span class="texto-sec">Referência mensal de gasto variável: ${fmt(a.estimativa.valor)}</span>${barra(variavelMes(db, a), a.estimativa.valor, variavelMes(db, a) > a.estimativa.valor ? 'vermelho' : '')}</div>` : ''}
-      ${listaCategorias(cat, totalMes)}
-    </section>
+  <div class="inicio-passos">
+    <button class="inicio-passo" data-acao="ajustar-conta" data-id="${esc(conta?.id || '')}"><b>1</b>Quanto tenho na conta hoje</button>
+    <button class="inicio-passo" data-acao="nova-receita"><b>2</b>Quanto recebo e em que dia</button>
+    <button class="inicio-passo" data-acao="novo-fixo"><b>3</b>Contas que pago todo mês</button>
+    <button class="inicio-passo" data-acao="novo-cartao"><b>4</b>Meus cartões de crédito</button>
   </div>`;
-}
-
-function variavelMes(db, a) {
-  return db.lancamentos.filter((l) => !l.recorrenteId && (l.parcelas || 1) === 1 && l.data.slice(0, 7) === a.mesAtual).reduce((s, l) => s + l.valor, 0);
-}
-
-function cartoesResumo(a) {
-  const ativos = a.cartoes.filter((c) => c.ativo !== false);
-  if (!ativos.length) return 'nenhum cartão cadastrado';
-  const disp = ativos.reduce((s, c) => s + c.disponivel, 0);
-  return `limite disponível ${fmt(disp)}`;
-}
-
-function cascata(a) {
-  const c = a.cascata;
-  const linha = (rotulo, v, sinal, dica = '') => (v || sinal === '=' ? `<li class="cascata__linha ${sinal === '=' ? 'cascata__total' : ''}">
-      <span>${rotulo}${dica ? `<small>${dica}</small>` : ''}</span>
-      <span class="num ${sinal === '−' ? 'neg-suave' : sinal === '+' ? 'pos' : ''}">${sinal === '=' ? '' : sinal} ${esc(fmt(Math.abs(v)))}</span>
-    </li>` : '');
-  return `<ul class="cascata">
-    ${linha('Saldo atual', a.saldoAtual, ' ')}
-    ${linha('A receber', c.aReceber, '+')}
-    ${linha('Contas fixas', c.contasFixas, '−')}
-    ${linha('Cartão (compras à vista e fixos)', c.cartao, '−')}
-    ${linha('Parcelas', c.parcelas, '−', 'no cartão e em carnê/boleto')}
-    ${linha('Outros agendados', c.outros, '−')}
-    ${linha('Gasto variável previsto', c.variavelPrevisto, '−', 'estimativa para os próximos meses')}
-    <li class="cascata__linha cascata__total"><span>Saldo projetado em ${fmtCurta(c.fimJanela)}</span><span class="num ${c.saldoFinal < 0 ? 'neg' : ''}">${esc(fmt(c.saldoFinal))}</span></li>
-  </ul>
-  <p class="texto-sec">O cartão de crédito só pesa aqui quando a fatura vence; o limite não é tratado como dinheiro. Receitas futuras aparecem como "a receber" e não entram no saldo de hoje.</p>`;
-}
-
-function proximos(a) {
-  const ate = a.eventos.filter((e) => e.tipo !== 'variavelPrevisto' && diffDays(a.hoje, e.dataEfetiva) <= 30);
-  if (!ate.length) return '<p class="texto-sec">Nada previsto para os próximos 30 dias.</p>';
-  return `<ul class="linha-tempo">${ate.map((e) => {
-    const acao = e.tipo === 'receita' ? `<button class="btn btn--mini" data-acao="confirmar-receita" data-id="${esc(e.id)}">Recebi</button>`
-      : e.tipo === 'fixo' ? `<button class="btn btn--mini" data-acao="pagar-fixo" data-id="${esc(e.id)}">Paguei</button>`
-        : e.tipo === 'fatura' ? `<button class="btn btn--mini" data-acao="pagar-fatura" data-cartao="${esc(e.cartaoId)}" data-chave="${esc(e.chave)}">Pagar</button>` : '';
-    return `<li class="lt ${e.atrasado ? 'lt--atrasado' : ''}">
-      <span class="lt__data">${fmtCurta(e.data)}</span>
-      <span class="lt__desc">${esc(e.descricao)}${e.atrasado ? pilula('atrasado', 'vermelho') : ''}${e.parcela ? pilula(`${e.parcela.i}/${e.parcela.n}`) : ''}</span>
-      ${valor(e.valor, { classe: e.valor > 0 ? 'pos' : '' })}
-      <span class="lt__saldo num ${e.saldoApos < 0 ? 'neg' : ''}" title="Saldo projetado após este evento">${esc(fmt(e.saldoApos))}</span>
-      <span class="lt__acao">${acao}</span>
-    </li>`;
-  }).join('')}</ul>`;
-}
-
-function boasVindas() {
-  return `<section class="cartao-ui boas-vindas">
-    <h2>Primeiros passos</h2>
-    <p>O painel calcula quanto você pode gastar a partir do que estiver cadastrado. Quatro informações bastam para começar:</p>
-    <ol>
-      <li><a href="#/ajustes">Saldo atual da sua conta</a></li>
-      <li><a href="#/fixos">Salário e outras receitas</a></li>
-      <li><a href="#/cartoes">Cartões de crédito e o que já está na fatura</a></li>
-      <li><a href="#/fixos">Contas fixas (aluguel, energia, internet…)</a></li>
-    </ol>
-    <p class="texto-sec">Quer ver como fica antes? <button class="link" data-acao="carregar-exemplo">Carregar dados de exemplo</button> (substitui os dados atuais).</p>
-  </section>`;
 }
