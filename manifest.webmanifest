@@ -1,0 +1,13 @@
+{
+  "name": "Finanças pessoais",
+  "short_name": "Finanças",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ee",
+  "theme_color": "#1f6f5c",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "assets/icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
